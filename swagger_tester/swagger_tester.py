@@ -6,6 +6,7 @@ import os
 import requests
 import six
 import time
+import pprint
 
 try:
     from urllib import urlencode
@@ -225,6 +226,13 @@ def swagger_test(swagger_yaml_path=None, app_url=None, authorize_error=None,
         pass
 
 
+def get_test_combinations_iter():
+    # For every operationId
+    for action in _HTTP_METHODS:
+        for operation in operation_sorted[action]:
+            yield action, operation
+
+
 def swagger_test_yield(swagger_yaml_path=None, app_url=None, authorize_error=None,
                        wait_time_between_tests=0, use_example=True, dry_run=False,
                        extra_headers={}):
@@ -308,6 +316,8 @@ def swagger_test_yield(swagger_yaml_path=None, app_url=None, authorize_error=Non
                     logger.info("\nWould send %s to %s with body %s and headers %s" %
                                 (action.upper(), url, body, headers))
                     continue
+                logger.info("\nSending %s to %s with body %s and headers %s" %
+                            (action.upper(), url, body, headers))
                 response = get_method_from_action(app_client, action)(url, headers=headers, data=body)
             else:
                 if app_url.endswith(swagger_parser.base_path):
@@ -319,6 +329,8 @@ def swagger_test_yield(swagger_yaml_path=None, app_url=None, authorize_error=Non
                     logger.info("\nWould send %s to %s with body %s and headers %s" %
                                 (action.upper(), full_path, body, headers))
                     continue
+                logger.info("\nSending %s to %s with body %s and headers %s" %
+                            (action.upper(), url, body, headers))
                 response = get_method_from_action(app_client, action)(full_path,
                                                                       headers=dict(headers),
                                                                       data=body,
@@ -360,13 +372,31 @@ def swagger_test_yield(swagger_yaml_path=None, app_url=None, authorize_error=Non
                 except ValueError:
                     response_json = response_text
 
-                if response.status_code in response_spec.keys():
-                    validate_definition(swagger_parser, response_spec[response.status_code], response_json)
-                elif 'default' in response_spec.keys():
-                    validate_definition(swagger_parser, response_spec['default'], response_json)
+                logger.info("Got response: %s", pprint.pformat(response_json))
+
+
+                response_schema = swagger_parser.paths.get(path, {}).get(action, {})['responses'].get(str(response.status_code), {}).get('schema')
+                if response_schema is not None:
+                    logger.info("Checking validity for %s against %s", pprint.pformat(response_json), pprint.pformat(response_schema))
+                    if '$ref' in response_schema:
+                        is_valid = swagger_parser.validate_definition(response_schema['$ref'].split('/')[-1], response_json)
+                    else:
+                        is_valid = swagger_parser.validate_definition(None, response_json, definition=response_schema)
                 else:
-                    raise AssertionError('Invalid status code {0}. Expected: {1}'.format(response.status_code,
-                                                                                         response_spec.keys()))
+                    is_valid = response_json == ''
+
+
+                logger.info('Found validity %s %s', response.status_code, is_valid)
+                if not is_valid:
+                    raise AssertionError('Response failed validation {0} vs {1}'.format(pprint.pformat(response_json), pprint.pformat(response_schema)))
+
+                # if response.status_code in response_spec.keys():
+                #     validate_definition(swagger_parser, response_spec[response.status_code], response_json)
+                # elif 'default' in response_spec.keys():
+                #     validate_definition(swagger_parser, response_spec['default'], response_json)
+                # else:
+                #     raise AssertionError('Invalid status code {0}. Expected: {1}'.format(response.status_code,
+                #                                                                          response_spec.keys()))
 
                 if wait_time_between_tests > 0:
                     time.sleep(wait_time_between_tests)
